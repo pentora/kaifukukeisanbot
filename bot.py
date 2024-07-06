@@ -1,13 +1,12 @@
-import cv2
-import numpy as np
-import pytesseract
-from discord.ext import commands
 import discord
+from discord.ext import commands
 import os
 from dotenv import load_dotenv
 import logging
 import io
 from PIL import Image
+import numpy as np
+from pytesseract import pytesseract
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -19,42 +18,38 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-def detect_icons(image):
-    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-    
-    color_ranges = {
-        '3h': ([20, 100, 100], [40, 255, 255]),  # 黄色
-        '1h': ([140, 100, 100], [160, 255, 255]),  # マゼンタ
-        '30m': ([100, 100, 100], [140, 255, 255]),  # 青
-        '5m': ([50, 100, 100], [70, 255, 255])  # 緑
+def is_similar_color(color1, color2, threshold=30):
+    return sum(abs(c1 - c2) for c1, c2 in zip(color1, color2)) < threshold
+
+def find_icon_regions(image):
+    width, height = image.size
+    icon_colors = {
+        '3h': (255, 193, 7),  # 黄色
+        '1h': (233, 30, 99),  # マゼンタ
+        '30m': (33, 150, 243),  # 青
+        '5m': (76, 175, 80)  # 緑
     }
     
-    detected_icons = {}
+    regions = {icon: [] for icon in icon_colors}
     
-    for icon, (lower, upper) in color_ranges.items():
-        mask = cv2.inRange(hsv, np.array(lower), np.array(upper))
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        if contours:
-            c = max(contours, key=cv2.contourArea)
-            x, y, w, h = cv2.boundingRect(c)
-            detected_icons[icon] = (x, y, w, h)
+    for y in range(0, height, 10):  # 10ピクセルごとにスキャン
+        for x in range(0, width, 10):
+            color = image.getpixel((x, y))
+            for icon, target_color in icon_colors.items():
+                if is_similar_color(color, target_color):
+                    regions[icon].append((x, y))
     
-    return detected_icons
+    return regions
 
-def preprocess_for_ocr(image):
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    _, binary = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
-    kernel = np.ones((2,2), np.uint8)
-    opening = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=1)
-    return opening
-
-def extract_number(image, x, y, w, h):
-    roi = image[y:y+h, x+w:x+w+100]
-    preprocessed = preprocess_for_ocr(roi)
+def extract_number(image, region):
+    x, y = region
+    roi = image.crop((x, y, x + 100, y + 50))  # 領域を適宜調整
+    gray = roi.convert('L')
+    threshold = 200
+    binary = gray.point(lambda x: 0 if x < threshold else 255, '1')
     
     config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789,'
-    number = pytesseract.image_to_string(preprocessed, config=config)
+    number = pytesseract.image_to_string(binary, config=config)
     number = ''.join(filter(str.isdigit, number))
     return int(number) if number else 0
 
@@ -63,45 +58,19 @@ async def process_image(attachment):
         image_data = await attachment.read()
         logger.debug(f"Read image data, size: {len(image_data)} bytes")
         
-        logger.debug(f"First 20 bytes of image data: {image_data[:20].hex()}")
-        
-        try:
-            with Image.open(io.BytesIO(image_data)) as img:
-                logger.debug(f"PIL Image size: {img.size}, mode: {img.mode}")
-                np_image = np.array(img)
-                logger.debug(f"Numpy array from PIL, shape: {np_image.shape}, dtype: {np_image.dtype}")
-        except Exception as pil_error:
-            logger.error(f"Failed to open image with PIL: {pil_error}")
-            raise ValueError("PILでの画像読み込みに失敗しました") from pil_error
-        
-        nparr = np.frombuffer(image_data, np.uint8)
-        image = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
-        logger.debug(f"OpenCV decoded image, shape: {image.shape if image is not None else 'None'}, dtype: {image.dtype if image is not None else 'None'}")
-        
-        if image is None:
-            raise ValueError("OpenCVでの画像デコードに失敗しました")
-        
-        if image.size == 0:
-            raise ValueError("デコードされた画像が空です")
-        
-        if len(image.shape) == 2:
-            logger.debug("画像がグレースケールです。カラーに変換します。")
-            image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-        elif image.shape[2] == 4:
-            logger.debug("画像にアルファチャンネルが含まれています。BGRに変換します。")
-            image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
-        
-        logger.debug(f"Final image shape before processing: {image.shape}")
-        
-        detected_icons = detect_icons(image)
-        logger.debug(f"Detected icons: {detected_icons}")
-        
-        results = {'3h': 0, '1h': 0, '30m': 0, '5m': 0}
-        
-        for icon, (x, y, w, h) in detected_icons.items():
-            number = extract_number(image, x, y, w, h)
-            results[icon] = number
-            logger.debug(f"Extracted number for {icon}: {number}")
+        with Image.open(io.BytesIO(image_data)) as img:
+            logger.debug(f"PIL Image size: {img.size}, mode: {img.mode}")
+            
+            icon_regions = find_icon_regions(img)
+            logger.debug(f"Detected icon regions: {icon_regions}")
+            
+            results = {'3h': 0, '1h': 0, '30m': 0, '5m': 0}
+            
+            for icon, regions in icon_regions.items():
+                if regions:
+                    number = extract_number(img, regions[0])  # 最初に見つかった領域を使用
+                    results[icon] = number
+                    logger.debug(f"Extracted number for {icon}: {number}")
         
         return results
     except Exception as e:
