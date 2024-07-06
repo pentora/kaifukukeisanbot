@@ -6,6 +6,9 @@ from dotenv import load_dotenv
 import pytesseract
 from PIL import Image
 
+# Tesseractのパスを明示的に設定
+pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
+
 # .envファイルから環境変数を読み込む（ローカル開発用）
 load_dotenv()
 
@@ -41,8 +44,11 @@ async def on_message(message):
         for attachment in message.attachments:
             if attachment.filename.endswith(('.png', '.jpg', '.jpeg', '.gif')):
                 await message.reply('画像を処理中...')
-                text = await process_image(attachment)
-                await message.reply(f'抽出されたテキスト:\n```\n{text}\n```')
+                try:
+                    text = await process_image(attachment)
+                    await message.reply(f'抽出されたテキスト:\n```\n{text}\n```')
+                except Exception as e:
+                    await message.reply(f'画像の処理中にエラーが発生しました: {str(e)}')
                 print(f'画像を処理: {attachment.filename}')
                 break  # 複数の画像がある場合、最初の1つにのみ反応
 
