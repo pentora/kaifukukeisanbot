@@ -14,6 +14,9 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 @bot.event
 async def on_ready():
     print(f'{bot.user} としてログインしました')
+    print(f'ボットは以下のサーバーに参加しています:')
+    for guild in bot.guilds:
+        print(f'- {guild.name} (id: {guild.id})')
 
 @bot.command()
 async def hello(ctx):
@@ -21,13 +24,16 @@ async def hello(ctx):
 
 @bot.event
 async def on_message(message):
+    print(f'メッセージを受信: {message.content} from {message.author}')
     if message.author == bot.user:
         return
 
     if message.attachments:
         for attachment in message.attachments:
             if attachment.filename.endswith(('.png', '.jpg', '.jpeg', '.gif')):
-                await message.channel.send('画像を確認した！')
+                # 元のメッセージに返信する
+                await message.reply('画像を確認した！')
+                print(f'画像を検出: {attachment.filename}')
                 break  # 複数の画像がある場合、最初の1つにのみ反応
 
     await bot.process_commands(message)
