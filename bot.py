@@ -13,58 +13,57 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-def load_icon_templates():
-    templates = {}
-    samples_dir = 'samples_notext'
-    icon_files = ['3h.png', '1h.png', '30m.png', '5m.png']
-    for filename in icon_files:
-        name = filename.split('.')[0]
-        path = os.path.join(samples_dir, filename)
-        templates[name] = cv2.imread(path, 0)
-    return templates
-
-def preprocess_image(image):
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    return blurred
-
-def detect_icons(image, templates, threshold=0.8):
-    preprocessed = preprocess_image(image)
-    detected_icons = []
-    for icon_name, template in templates.items():
-        res = cv2.matchTemplate(preprocessed, template, cv2.TM_CCOEFF_NORMED)
-        loc = np.where(res >= threshold)
-        for pt in zip(*loc[::-1]):
-            detected_icons.append((icon_name, pt, template.shape))
+def detect_icons(image):
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    
+    # 色範囲の定義
+    color_ranges = {
+        '3h': ([20, 100, 100], [40, 255, 255]),  # 黄色
+        '1h': ([140, 100, 100], [160, 255, 255]),  # マゼンタ
+        '30m': ([100, 100, 100], [140, 255, 255]),  # 青
+        '5m': ([50, 100, 100], [70, 255, 255])  # 緑
+    }
+    
+    detected_icons = {}
+    
+    for icon, (lower, upper) in color_ranges.items():
+        mask = cv2.inRange(hsv, np.array(lower), np.array(upper))
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        if contours:
+            c = max(contours, key=cv2.contourArea)
+            x, y, w, h = cv2.boundingRect(c)
+            detected_icons[icon] = (x, y, w, h)
+    
     return detected_icons
 
-def extract_number(image, x, y, w, h):
-    number_roi = image[y+int(h*0.5):y+h, x+int(w*0.5):x+w]
-    gray = cv2.cvtColor(number_roi, cv2.COLOR_BGR2GRAY)
-    
-    thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2)
-    
+def preprocess_for_ocr(image):
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    _, binary = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
     kernel = np.ones((2,2), np.uint8)
-    opening = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=1)
+    opening = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=1)
+    return opening
+
+def extract_number(image, x, y, w, h):
+    roi = image[y:y+h, x+w:x+w+100]  # アイコンの右側を取得
+    preprocessed = preprocess_for_ocr(roi)
     
-    config = r'--oem 3 --psm 10 -c tessedit_char_whitelist=0123456789'
-    number = pytesseract.image_to_string(opening, config=config)
-    
-    return ''.join(filter(str.isdigit, number))
+    config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789,'
+    number = pytesseract.image_to_string(preprocessed, config=config)
+    number = ''.join(filter(str.isdigit, number))
+    return int(number) if number else 0
 
 async def process_image(attachment):
     image_data = await attachment.read()
     image = cv2.imdecode(np.frombuffer(image_data, np.uint8), cv2.IMREAD_COLOR)
     
-    templates = load_icon_templates()
-    detected_icons = detect_icons(image, templates, threshold=0.8)
+    detected_icons = detect_icons(image)
     
     results = {'3h': 0, '1h': 0, '30m': 0, '5m': 0}
     
-    for icon_name, (x, y), (h, w) in detected_icons:
+    for icon, (x, y, w, h) in detected_icons.items():
         number = extract_number(image, x, y, w, h)
-        if number:
-            results[icon_name] += int(number)
+        results[icon] = number
     
     return results
 
