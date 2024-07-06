@@ -28,8 +28,7 @@ def load_icon_templates():
 def preprocess_image(image):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    return thresh
+    return blurred
 
 def detect_icons(image, templates, threshold=0.7):
     preprocessed = preprocess_image(image)
@@ -42,29 +41,31 @@ def detect_icons(image, templates, threshold=0.7):
     return detected_icons
 
 def extract_number(image, x, y, w, h):
-    # 数字領域の抽出を改善
     number_roi = image[y+int(h*0.5):y+h, x+int(w*0.5):x+w]
     gray = cv2.cvtColor(number_roi, cv2.COLOR_BGR2GRAY)
     
-    # コントラスト強調
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-    contrast = clahe.apply(gray)
-    
-    # 二値化
-    _, thresh = cv2.threshold(contrast, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    # 適応的閾値処理
+    thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 2)
     
     # ノイズ除去
     kernel = np.ones((2,2), np.uint8)
     opening = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=1)
     
-    # 輪郭を少し太くする
-    dilated = cv2.dilate(opening, kernel, iterations=1)
+    # 数字領域の検出
+    contours, _ = cv2.findContours(opening, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if contours:
+        # 最大の輪郭を数字と仮定
+        c = max(contours, key=cv2.contourArea)
+        x, y, w, h = cv2.boundingRect(c)
+        digit_roi = opening[y:y+h, x:x+w]
+    else:
+        digit_roi = opening
     
     # Tesseractの設定を調整
-    config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789'
-    number = pytesseract.image_to_string(dilated, config=config)
+    config = r'--oem 3 --psm 10 -c tessedit_char_whitelist=0123456789'
+    number = pytesseract.image_to_string(digit_roi, config=config)
     
-    return ''.join(filter(str.isdigit, number)), dilated
+    return ''.join(filter(str.isdigit, number)), digit_roi
 
 async def process_image(attachment):
     image_data = await attachment.read()
@@ -110,23 +111,22 @@ async def on_message(message):
         for attachment in message.attachments:
             if attachment.filename.endswith(('.png', '.jpg', '.jpeg')):
                 try:
-                    results, debug_image_path, debug_images = await process_image(attachment)
-                    total_time = calculate_total_time(results)
-                    
-                    response = "検出されたアイコンと数量:\n"
-                    for icon in ['3h', '1h', '30m', '5m']:
-                        response += f"{icon}: {results[icon]}個\n"
-                    
-                    response += f"\n計算結果: {results['3h']} * 3 + {results['1h']} + {results['30m']} * 0.5 + {results['5m']} / 12 = {total_time:.2f}\n"
-                    response += f"合計 {total_time:.2f} 時間"
-                    
-                    await message.reply(response, file=discord.File(debug_image_path))
-                    
-                    for filename, img in debug_images:
-                        with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as temp_file:
-                            cv2.imwrite(temp_file.name, img)
-                            await message.reply(file=discord.File(temp_file.name, filename=filename))
-                    
+    				results, debug_image_path, debug_images = await process_image(attachment)
+    				total_time = calculate_total_time(results)
+    				
+    				response = "検出されたアイコンと数量:\n"
+    				for icon in ['3h', '1h', '30m', '5m']:
+    					response += f"{icon}: {results[icon]}個\n"
+    				
+    				response += f"\n計算結果: {results['3h']} * 3 + {results['1h']} + {results['30m']} * 0.5 + {results['5m']} / 12 = {total_time:.2f}\n"
+    				response += f"合計 {total_time:.2f} 時間"
+    				
+    				await message.reply(response, file=discord.File(debug_image_path))
+    				
+    				for filename, img in debug_images:
+    					with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as temp_file:
+    						cv2.imwrite(temp_file.name, img)
+    						await message.reply(file=discord.File(temp_file.name, filename=filename))
                 except Exception as e:
                     await message.reply(f'画像の処理中にエラーが発生しました: {str(e)}')
                 break
