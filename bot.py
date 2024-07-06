@@ -42,13 +42,29 @@ def detect_icons(image, templates, threshold=0.7):
     return detected_icons
 
 def extract_number(image, x, y, w, h):
-    number_roi = image[y+int(h*0.6):y+h, x+int(w*0.6):x+w]
+    # 数字領域の抽出を改善
+    number_roi = image[y+int(h*0.5):y+h, x+int(w*0.5):x+w]
     gray = cv2.cvtColor(number_roi, cv2.COLOR_BGR2GRAY)
-    _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    kernel = np.ones((2,2),np.uint8)
-    thresh = cv2.dilate(thresh, kernel, iterations=1)
-    number = pytesseract.image_to_string(thresh, config='--psm 7 --oem 3 -c tessedit_char_whitelist=x0123456789')
-    return ''.join(filter(str.isdigit, number)), thresh
+    
+    # コントラスト強調
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    contrast = clahe.apply(gray)
+    
+    # 二値化
+    _, thresh = cv2.threshold(contrast, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    
+    # ノイズ除去
+    kernel = np.ones((2,2), np.uint8)
+    opening = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=1)
+    
+    # 輪郭を少し太くする
+    dilated = cv2.dilate(opening, kernel, iterations=1)
+    
+    # Tesseractの設定を調整
+    config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789'
+    number = pytesseract.image_to_string(dilated, config=config)
+    
+    return ''.join(filter(str.isdigit, number)), dilated
 
 async def process_image(attachment):
     image_data = await attachment.read()
@@ -60,7 +76,6 @@ async def process_image(attachment):
     results = {'3h': 0, '1h': 0, '30m': 0, '5m': 0}
     debug_images = []
     
-    # 検出されたアイコンを可視化
     debug_image = image.copy()
     for icon_name, (x, y), (h, w) in detected_icons:
         cv2.rectangle(debug_image, (x, y), (x+w, y+h), (0, 255, 0), 2)
@@ -70,10 +85,8 @@ async def process_image(attachment):
         if number:
             results[icon_name] += int(number)
         
-        # 数字認識用の画像を保存
         debug_images.append((f"{icon_name}_{x}_{y}.png", number_thresh))
     
-    # デバッグ画像を一時ファイルとして保存
     with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as temp_file:
         cv2.imwrite(temp_file.name, debug_image)
         debug_image_path = temp_file.name
@@ -109,7 +122,6 @@ async def on_message(message):
                     
                     await message.reply(response, file=discord.File(debug_image_path))
                     
-                    # 数字認識用の画像を送信
                     for filename, img in debug_images:
                         with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as temp_file:
                             cv2.imwrite(temp_file.name, img)
