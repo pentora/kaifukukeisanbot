@@ -6,6 +6,7 @@ import discord
 import os
 import io
 from dotenv import load_dotenv
+import tempfile
 
 load_dotenv()
 
@@ -47,7 +48,7 @@ def extract_number(image, x, y, w, h):
     kernel = np.ones((2,2),np.uint8)
     thresh = cv2.dilate(thresh, kernel, iterations=1)
     number = pytesseract.image_to_string(thresh, config='--psm 7 --oem 3 -c tessedit_char_whitelist=x0123456789')
-    return ''.join(filter(str.isdigit, number))
+    return ''.join(filter(str.isdigit, number)), thresh
 
 async def process_image(attachment):
     image_data = await attachment.read()
@@ -57,12 +58,27 @@ async def process_image(attachment):
     detected_icons = detect_icons(image, templates, threshold=0.7)
     
     results = {'3h': 0, '1h': 0, '30m': 0, '5m': 0}
+    debug_images = []
+    
+    # 検出されたアイコンを可視化
+    debug_image = image.copy()
     for icon_name, (x, y), (h, w) in detected_icons:
-        number = extract_number(image, x, y, w, h)
+        cv2.rectangle(debug_image, (x, y), (x+w, y+h), (0, 255, 0), 2)
+        number, number_thresh = extract_number(image, x, y, w, h)
+        cv2.putText(debug_image, f"{icon_name}: {number}", (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+        
         if number:
             results[icon_name] += int(number)
+        
+        # 数字認識用の画像を保存
+        debug_images.append((f"{icon_name}_{x}_{y}.png", number_thresh))
     
-    return results
+    # デバッグ画像を一時ファイルとして保存
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as temp_file:
+        cv2.imwrite(temp_file.name, debug_image)
+        debug_image_path = temp_file.name
+    
+    return results, debug_image_path, debug_images
 
 def calculate_total_time(results):
     total_hours = results['3h'] * 3 + results['1h'] + results['30m'] * 0.5 + results['5m'] / 12
@@ -81,7 +97,7 @@ async def on_message(message):
         for attachment in message.attachments:
             if attachment.filename.endswith(('.png', '.jpg', '.jpeg')):
                 try:
-                    results = await process_image(attachment)
+                    results, debug_image_path, debug_images = await process_image(attachment)
                     total_time = calculate_total_time(results)
                     
                     response = "検出されたアイコンと数量:\n"
@@ -91,7 +107,14 @@ async def on_message(message):
                     response += f"\n計算結果: {results['3h']} * 3 + {results['1h']} + {results['30m']} * 0.5 + {results['5m']} / 12 = {total_time:.2f}\n"
                     response += f"合計 {total_time:.2f} 時間"
                     
-                    await message.reply(response)
+                    await message.reply(response, file=discord.File(debug_image_path))
+                    
+                    # 数字認識用の画像を送信
+                    for filename, img in debug_images:
+                        with tempfile.NamedTemporaryFile(delete=False, suffix='.png') as temp_file:
+                            cv2.imwrite(temp_file.name, img)
+                            await message.reply(file=discord.File(temp_file.name, filename=filename))
+                    
                 except Exception as e:
                     await message.reply(f'画像の処理中にエラーが発生しました: {str(e)}')
                 break
