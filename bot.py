@@ -5,7 +5,6 @@ from discord.ext import commands
 import discord
 import os
 from dotenv import load_dotenv
-import io
 import logging
 
 # ロギングの設定
@@ -19,7 +18,44 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# 他の関数は変更なし
+def detect_icons(image):
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    
+    color_ranges = {
+        '3h': ([20, 100, 100], [40, 255, 255]),  # 黄色
+        '1h': ([140, 100, 100], [160, 255, 255]),  # マゼンタ
+        '30m': ([100, 100, 100], [140, 255, 255]),  # 青
+        '5m': ([50, 100, 100], [70, 255, 255])  # 緑
+    }
+    
+    detected_icons = {}
+    
+    for icon, (lower, upper) in color_ranges.items():
+        mask = cv2.inRange(hsv, np.array(lower), np.array(upper))
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        if contours:
+            c = max(contours, key=cv2.contourArea)
+            x, y, w, h = cv2.boundingRect(c)
+            detected_icons[icon] = (x, y, w, h)
+    
+    return detected_icons
+
+def preprocess_for_ocr(image):
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    _, binary = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
+    kernel = np.ones((2,2), np.uint8)
+    opening = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=1)
+    return opening
+
+def extract_number(image, x, y, w, h):
+    roi = image[y:y+h, x+w:x+w+100]
+    preprocessed = preprocess_for_ocr(roi)
+    
+    config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789,'
+    number = pytesseract.image_to_string(preprocessed, config=config)
+    number = ''.join(filter(str.isdigit, number))
+    return int(number) if number else 0
 
 async def process_image(attachment):
     try:
@@ -53,6 +89,14 @@ async def process_image(attachment):
         logger.exception("画像処理中にエラーが発生しました")
         raise
 
+def calculate_total_time(results):
+    total_hours = results['3h'] * 3 + results['1h'] + results['30m'] * 0.5 + results['5m'] / 12
+    return total_hours
+
+@bot.event
+async def on_ready():
+    print(f'{bot.user} としてログインしました')
+
 @bot.event
 async def on_message(message):
     if message.author == bot.user:
@@ -81,8 +125,6 @@ async def on_message(message):
                 break
 
     await bot.process_commands(message)
-
-# 他のコードは変更なし
 
 TOKEN = os.getenv('DISCORD_TOKEN')
 bot.run(TOKEN)
