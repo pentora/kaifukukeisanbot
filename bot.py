@@ -5,6 +5,7 @@ from discord.ext import commands
 import discord
 import os
 from dotenv import load_dotenv
+import io
 
 load_dotenv()
 
@@ -16,12 +17,11 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 def detect_icons(image):
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     
-    # 色範囲の定義
     color_ranges = {
-        '3h': ([20, 100, 100], [40, 255, 255]),  # 黄色
-        '1h': ([140, 100, 100], [160, 255, 255]),  # マゼンタ
-        '30m': ([100, 100, 100], [140, 255, 255]),  # 青
-        '5m': ([50, 100, 100], [70, 255, 255])  # 緑
+        '3h': ([20, 100, 100], [40, 255, 255]),
+        '1h': ([140, 100, 100], [160, 255, 255]),
+        '30m': ([100, 100, 100], [140, 255, 255]),
+        '5m': ([50, 100, 100], [70, 255, 255])
     }
     
     detected_icons = {}
@@ -45,7 +45,7 @@ def preprocess_for_ocr(image):
     return opening
 
 def extract_number(image, x, y, w, h):
-    roi = image[y:y+h, x+w:x+w+100]  # アイコンの右側を取得
+    roi = image[y:y+h, x+w:x+w+100]
     preprocessed = preprocess_for_ocr(roi)
     
     config = r'--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789,'
@@ -55,7 +55,11 @@ def extract_number(image, x, y, w, h):
 
 async def process_image(attachment):
     image_data = await attachment.read()
-    image = cv2.imdecode(np.frombuffer(image_data, np.uint8), cv2.IMREAD_COLOR)
+    nparr = np.frombuffer(image_data, np.uint8)
+    image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    
+    if image is None:
+        raise ValueError("画像の読み込みに失敗しました")
     
     detected_icons = detect_icons(image)
     
