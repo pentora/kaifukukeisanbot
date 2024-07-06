@@ -1,20 +1,31 @@
 import discord
 import os
+from discord.ext import commands
 
 intents = discord.Intents.default()
 intents.message_content = True
-client = discord.Client(intents=intents)
 
-@client.event
+bot = commands.Bot(command_prefix='!', intents=intents)
+
+@bot.event
 async def on_ready():
-    print(f'We have logged in as {client.user}')
+    print(f'{bot.user} としてログインしました')
 
-@client.event
+@bot.command()
+async def hello(ctx):
+    await ctx.send('こんにちは！')
+
+@bot.event
 async def on_message(message):
-    if message.author == client.user:
+    if message.author == bot.user:
         return
 
-    if message.content.startswith('!hello'):
-        await message.channel.send('Hello!')
+    if message.attachments:
+        for attachment in message.attachments:
+            if attachment.filename.endswith(('.png', '.jpg', '.jpeg', '.gif')):
+                await message.channel.send('画像を確認した！')
+                break  # 複数の画像がある場合、最初の1つにのみ反応
 
-client.run(os.getenv('DISCORD_TOKEN'))
+    await bot.process_commands(message)
+
+bot.run(os.getenv('DISCORD_TOKEN'))
