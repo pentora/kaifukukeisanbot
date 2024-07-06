@@ -1,5 +1,5 @@
 discord.py
-pillow
-opencv-python-headless
-pytesseract
 python-dotenv
+pytesseract
+Pillow
+opencv-python-headless
