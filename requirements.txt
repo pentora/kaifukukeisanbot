@@ -1,0 +1,4 @@
+discord.py
+pillow
+opencv-python-headless
+pytesseract
